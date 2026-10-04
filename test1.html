@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Physics Sandbox A</title>
+<style>
+:root{box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+html,body{height:100%;margin:0;background:#fff;overflow:hidden;font-family:system-ui,-apple-system,"Segoe UI",sans-serif}
+canvas{position:absolute;left:0;top:0;width:100%;height:100%;touch-action:none;display:block;cursor:grab}
+canvas.drag{cursor:grabbing}
+#add{position:absolute;left:16px;top:calc(16px + env(safe-area-inset-top,0px));width:52px;height:52px;border:0;border-radius:50%;background:#1d1d1b;color:#fff;font-size:32px;line-height:1;cursor:pointer;display:grid;place-items:center;padding:0;transition:transform .12s}
+#add:active{transform:scale(.92)}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<button id="add" aria-label="Add a ball" title="Add a ball">+</button>
+<script>
+const cv=document.getElementById('c'),ctx=cv.getContext('2d');
+let W=0,H=0,dpr=1,held=null,hoff={x:0,y:0},ptr={x:0,y:0};
+const R=32,G=70,BW=300,BH=210,BT=16,GRAV=1800,SUB=10,MAXN=150;
+const COLORS=['#ef6f5e','#f2b441','#4c8ff0','#8d6bdc','#2cb5a0','#e5659a'];
+const bodies=[],imgs=[];
+const clamp=(v,a,b)=>Math.min(Math.max(v,a),b);
+
+function shrink(im,px){
+  const c=document.createElement('canvas');c.width=c.height=px;
+  const g=c.getContext('2d');g.imageSmoothingEnabled=true;g.imageSmoothingQuality='high';
+  let cur=im,sz=Math.min(im.naturalWidth,im.naturalHeight);
+  while(sz/2>px){
+    const t=document.createElement('canvas');t.width=t.height=sz=Math.round(sz/2);
+    const tg=t.getContext('2d');tg.imageSmoothingQuality='high';tg.drawImage(cur,0,0,sz,sz);cur=t;
+  }
+  g.drawImage(cur,0,0,px,px);
+  return c;
+}
+for(let i=1;i<=5;i++){
+  const im=new Image();
+  im.onload=()=>{imgs[i-1]=shrink(im,Math.round(2*R*Math.max(dpr,2)))};
+  im.src=i+'.jpg';
+}
+
+function resize(){
+  dpr=window.devicePixelRatio||1;
+  W=cv.clientWidth;H=cv.clientHeight;
+  cv.width=W*dpr;cv.height=H*dpr;
+  for(const b of bodies){b.x=clamp(b.x,R,W-R);b.y=Math.min(b.y,H-G-R)}
+}
+window.addEventListener('resize',resize);
+
+function statics(){
+  const top=H-G,l=W/2-BW/2;
+  return [
+    {x:-100,y:top,w:W+200,h:G+100},
+    {x:l-BT,y:top-12,w:BW+2*BT,h:12,bin:1},
+    {x:l-BT,y:top-BH,w:BT,h:BH,bin:1},
+    {x:l+BW,y:top-BH,w:BT,h:BH,bin:1}
+  ];
+}
+
+function spawn(){
+	for (q=0;q<=4;q++){
+  if(bodies.length>=MAXN)bodies.shift();
+  bodies.push({x:90+Math.random()*Math.max(1,W-180),y:-R-Math.random()*30,vx:(Math.random()-.5)*120,vy:0,
+    c:COLORS[Math.random()*COLORS.length|0],img:Math.random()*5|0});
+	}
+}
+document.getElementById('add').addEventListener('click',spawn);
+
+// circle vs rectangle -> [nx,ny,penetration] (normal points toward the circle)
+function circRect(c,rx,ry,rw,rh){
+  const qx=clamp(c.x,rx,rx+rw),qy=clamp(c.y,ry,ry+rh),dx=c.x-qx,dy=c.y-qy,d2=dx*dx+dy*dy;
+  if(d2>R*R)return null;
+  if(d2>1e-9){const d=Math.sqrt(d2);return[dx/d,dy/d,R-d]}
+  const l=c.x-rx,r=rx+rw-c.x,t=c.y-ry,bt=ry+rh-c.y,m=Math.min(l,r,t,bt);
+  if(m===t)return[0,-1,t+R];
+  if(m===bt)return[0,1,bt+R];
+  if(m===l)return[-1,0,l+R];
+  return[1,0,r+R];
+}
+
+// push apart + bounce + a little friction; b === null means static
+function resolve(a,b,nx,ny,pen,fr){
+  const ia=a===held?.15:1,ib=b?(b===held?.15:1):0,sum=ia+ib;
+  a.x+=nx*pen*ia/sum;a.y+=ny*pen*ia/sum;
+  if(b){b.x-=nx*pen*ib/sum;b.y-=ny*pen*ib/sum}
+  const bvx=b?b.vx:0,bvy=b?b.vy:0,rv=(a.vx-bvx)*nx+(a.vy-bvy)*ny;
+  if(rv<0){
+    const e=-rv>250?.12:0,j=-(1+e)*rv/sum;
+    a.vx+=nx*j*ia;a.vy+=ny*j*ia;
+    if(b){b.vx-=nx*j*ib;b.vy-=ny*j*ib}
+  }
+  const tx=-ny,ty=nx,d=((a.vx-bvx)*tx+(a.vy-bvy)*ty)*fr;
+  a.vx-=tx*d*ia/sum;a.vy-=ty*d*ia/sum;
+  if(b){b.vx+=tx*d*ib/sum;b.vy+=ty*d*ib/sum}
+}
+
+function pair(a,b){
+  const dx=a.x-b.x,dy=a.y-b.y,d=Math.hypot(dx,dy);
+  if(d>=2*R)return;
+  resolve(a,b,d>1e-6?dx/d:0,d>1e-6?dy/d:-1,2*R-d,.004);
+}
+
+function step(dt){
+  const st=statics();
+  if(held){
+    let vx=(ptr.x-hoff.x-held.x)*18,vy=(ptr.y-hoff.y-held.y)*18;
+    const sp=Math.hypot(vx,vy);
+    if(sp>2600){vx*=2600/sp;vy*=2600/sp}
+    held.vx=vx;held.vy=vy;
+  }
+  const h=dt/SUB;
+  for(let n=0;n<SUB;n++){
+    for(const b of bodies){if(b!==held)b.vy+=GRAV*h;b.x+=b.vx*h;b.y+=b.vy*h}
+    for(let it=0;it<3;it++){
+      for(let i=0;i<bodies.length;i++)for(let j=i+1;j<bodies.length;j++)pair(bodies[i],bodies[j]);
+      for(const b of bodies)for(const r of st){
+        const k=circRect(b,r.x,r.y,r.w,r.h);
+        if(k)resolve(b,null,k[0],k[1],k[2],.02);
+      }
+    }
+    for(const b of bodies){
+      if(b.x<R){b.x=R;if(b.vx<0)b.vx=0}
+      if(b.x>W-R){b.x=W-R;if(b.vx>0)b.vx=0}
+    }
+  }
+}
+
+function draw(){
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.clearRect(0,0,W,H);
+  ctx.fillStyle='#e8e8e6';ctx.fillRect(0,H-G,W,G);
+  ctx.fillStyle='#cfcfcc';ctx.fillRect(0,H-G,W,2);
+  ctx.fillStyle='#2f9e5b';
+  for(const r of statics())if(r.bin){ctx.beginPath();ctx.roundRect(r.x,r.y,r.w,r.h,3);ctx.fill()}
+  for(const b of bodies){
+    ctx.beginPath();ctx.arc(b.x,b.y,R,0,Math.PI*2);ctx.fillStyle=b.c;ctx.fill();
+    const im=imgs[b.img];
+    if(im){ctx.save();ctx.beginPath();ctx.arc(b.x,b.y,R,0,Math.PI*2);ctx.clip();ctx.drawImage(im,b.x-R,b.y-R,2*R,2*R);ctx.restore()}
+    ctx.beginPath();ctx.arc(b.x,b.y,R-.75,0,Math.PI*2);
+    ctx.lineWidth=b===held?3:1.5;ctx.strokeStyle=b===held?'#1d1d1b':'rgba(0,0,0,.18)';ctx.stroke();
+  }
+}
+
+let last=performance.now();
+function loop(t){const dt=Math.min((t-last)/1000,1/30);last=t;step(dt);draw();requestAnimationFrame(loop)}
+
+function pos(e){const r=cv.getBoundingClientRect();return{x:e.clientX-r.left,y:e.clientY-r.top}}
+cv.addEventListener('pointerdown',e=>{
+  const p=pos(e);ptr=p;
+  for(let i=bodies.length-1;i>=0;i--){
+    const b=bodies[i];
+    if(Math.hypot(p.x-b.x,p.y-b.y)<=R){
+      held=b;hoff={x:p.x-b.x,y:p.y-b.y};
+      bodies.splice(i,1);bodies.push(b);
+      cv.setPointerCapture(e.pointerId);cv.classList.add('drag');break;
+    }
+  }
+});
+cv.addEventListener('pointermove',e=>{ptr=pos(e)});
+function release(){
+  if(held){const sp=Math.hypot(held.vx,held.vy);if(sp>2200){held.vx*=2200/sp;held.vy*=2200/sp}}
+  held=null;cv.classList.remove('drag');
+}
+cv.addEventListener('pointerup',release);
+cv.addEventListener('pointercancel',release);
+
+resize();
+for(let i=0;i<4;i++){spawn();bodies[i].y=-R-i*70}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
