@@ -27,7 +27,6 @@ const R=32,G=70,BW=300,BH=210,BT=16,GRAV=1800,SUB=10,MAXN=150;
 const E=MODE?.12:.38, ETH=MODE?250:150;          // plain bin = bouncier, lighter feel
 const COLORS=['#ef6f5e','#f2b441','#4c8ff0','#8d6bdc','#2cb5a0','#e5659a'];
 const bodies=[],imgs=[],parts=[];
-let pressImg=null;
 const clamp=(v,a,b)=>Math.min(Math.max(v,a),b);
 
 /* ---------- sound (starts after the first click/touch) ---------- */
@@ -68,7 +67,6 @@ for(let i=1;i<=5;i++){
   im.onload=()=>{imgs[i-1]=shrink(im,Math.round(2*R*Math.max(dpr,2)))};
   im.src=i+'.jpg';
 }
-if(MODE){const im=new Image();im.onload=()=>{pressImg=shrink(im,Math.round(BW*Math.max(dpr,2)))};im.src='press.jpg'}
 
 /* ---------- layout ---------- */
 function resize(){
@@ -97,12 +95,16 @@ function spawn(){
 }
 document.getElementById('add').addEventListener('click',()=>{audio();spawn()});
 
-/* ---------- compactor: platen + crush ---------- */
-const platen={p:0,dir:0,crushed:false,holding:false};
-const PT=76; // platen thickness
+/* ---------- compactor: top piston, then side piston, then crush ---------- */
+// s: 0 idle, 1 top piston down, 2 side piston pushes right, 3 holding, 4 side retracts, 5 top retracts
+const platen={s:0,p:0,q:0,crushed:false,holding:false};
+const PT=76;                 // top platen thickness
+const SIDE_MAX=BW*.62;       // how far the side platen pushes
+const TOP_DEPTH=.38;         // how deep the top platen goes (fraction of bin interior)
+const ease=p=>p*p*(3-2*p);
 function platenBottom(){
-  const iy=H-G-BH,ih=BH-12,rest=iy-14,down=iy+ih-30,p=platen.p;
-  return rest+(down-rest)*(p*p*(3-2*p));
+  const iy=H-G-BH,ih=BH-12,rest=iy-24,down=iy+ih*TOP_DEPTH;
+  return rest+(down-rest)*ease(platen.p);
 }
 function crush(){
   const l=W/2-BW/2,top=H-G;let n=0,r=0,g=0,bl=0;
@@ -113,19 +115,18 @@ function crush(){
     if(b===held){held=null;cv.classList.remove('drag')}
     bodies.splice(i,1);
   }
-  puff(W/2,top-14,14,BW-30);
+  puff(l+BW*.4,top-14,14,BW*.6);
   if(!n)return;
   const hs=32+Math.min(n,12)*1.6;          // cube grows with how much was crushed
-  const k=.38; // darken the average colour
+  const k=.38;                             // darken the average colour
   const col='rgb('+(r/n*k|0)+','+(g/n*k|0)+','+(bl/n*k|0)+')';
-  // slides out of the slot on the right side of the machine
-  const x=Math.min(W-hs,l+BW+BT+hs+6);
+  const x=Math.min(W-hs,l+BW+BT+hs+6);     // slides out of the slot on the right
   bodies.push({x,y:top-hs,vx:340,vy:0,sq:1,hs,c:col,a:0});
 }
 if(pressBtn){
   pressBtn.addEventListener('pointerdown',e=>{
     audio();platen.holding=true;
-    if(platen.dir!==1){platen.dir=1;platen.crushed=false;tone(160,90,.25,'square',.04)}
+    if(platen.s===0){platen.s=1;platen.crushed=false;tone(160,90,.25,'square',.04)}
     try{pressBtn.setPointerCapture(e.pointerId)}catch(_){}
   });
   const up=()=>{platen.holding=false};
@@ -135,15 +136,11 @@ if(pressBtn){
 function tickPlaten(dt){
   if(!MODE)return;
   const P=platen;
-  if(P.dir===1){
-    P.p+=dt/.38;
-    if(P.p>=1){
-      P.p=1;P.dir=0;
-      if(!P.crushed){P.crushed=true;shake=12;tone(70,28,.35,'sawtooth',.22);crush()}
-    }
-  }
-  if(P.dir===0&&P.p===1&&!P.holding){P.dir=-1;tone(220,110,.35,'square',.03)}
-  if(P.dir===-1){P.p-=dt/.6;if(P.p<=0){P.p=0;P.dir=0}}
+  if(P.s===1){P.p+=dt/.38;if(P.p>=1){P.p=1;P.s=2;shake=5;tone(90,45,.2,'sawtooth',.14);puff(W/2,H-G-BH+20,5,BW*.5)}}
+  else if(P.s===2){P.q+=dt/.42;if(P.q>=1){P.q=1;P.s=3;shake=14;tone(70,28,.35,'sawtooth',.22);crush()}}  // cube only appears now
+  else if(P.s===3){if(!P.holding){P.s=4;tone(220,110,.35,'square',.03)}}
+  else if(P.s===4){P.q-=dt/.45;if(P.q<=0){P.q=0;P.s=5}}
+  else if(P.s===5){P.p-=dt/.6;if(P.p<=0){P.p=0;P.s=0}}
 }
 
 /* ---------- physics ---------- */
@@ -223,21 +220,47 @@ function step(dt){
 
 /* ---------- drawing ---------- */
 function rr(x,y,w,h,r){ctx.beginPath();ctx.roundRect(x,y,w,h,r)}
-function drawPlaten(l,bottom){
-  const w=BW-4,x=l+2,y=bottom-PT;
-  ctx.fillStyle='#7b7b79';ctx.fillRect(W/2-8,-10,16,y+12);            // piston arm
-  ctx.fillStyle='rgba(255,255,255,.25)';ctx.fillRect(W/2-8,-10,4,y+12);
-  ctx.save();ctx.shadowColor='rgba(0,0,0,.35)';ctx.shadowBlur=10;ctx.shadowOffsetY=4;
-  ctx.fillStyle='#6a6a68';rr(x,y,w,PT,6);ctx.fill();ctx.restore();
-  ctx.save();rr(x+4,y+4,w-8,PT-8,4);ctx.clip();
-  if(pressImg){const px=pressImg.width,sh=px*(PT-8)/(w-8);ctx.drawImage(pressImg,0,(px-sh)/2,px,sh,x+4,y+4,w-8,PT-8)}
-  else{ctx.fillStyle='#a9a9a7';ctx.fillRect(x+4,y+4,w-8,PT-8)}
+function metal(x,y,w,h,vertical){
+  ctx.save();ctx.shadowColor='rgba(0,0,0,.3)';ctx.shadowBlur=8;ctx.shadowOffsetY=3;
+  ctx.fillStyle='#6a6a68';rr(x,y,w,h,5);ctx.fill();ctx.restore();
+  ctx.save();rr(x,y,w,h,5);ctx.clip();
+  ctx.strokeStyle='rgba(255,255,255,.18)';ctx.lineWidth=2;
+  if(vertical)for(let i=x+10;i<x+w;i+=14){ctx.beginPath();ctx.moveTo(i,y);ctx.lineTo(i,y+h);ctx.stroke()}
+  else for(let i=y+10;i<y+h;i+=14){ctx.beginPath();ctx.moveTo(x,i);ctx.lineTo(x+w,i);ctx.stroke()}
   ctx.restore();
-  ctx.lineWidth=2;ctx.strokeStyle='#444';rr(x,y,w,PT,6);ctx.stroke();
+  ctx.lineWidth=2;ctx.strokeStyle='#444';rr(x,y,w,h,5);ctx.stroke();
 }
-function drawBall(b,k){
+// fixed parts that connect both pistons to the bin itself
+function drawFrame(l,iy){
+  const px=l+BW+BT/2,mid=iy+(BH-12)*TOP_DEPTH+6+((BH-12)*(1-TOP_DEPTH)-6)/2;
+  ctx.fillStyle='#7b7b79';
+  ctx.fillRect(l+BW-2,iy-6,BT+4,8);                       // bolted base plate on the right wall
+  ctx.fillRect(px-7,iy-186,14,186);                       // post
+  ctx.fillRect(W/2-7,iy-186,px-W/2+14,14);                // beam over the bin
+  ctx.fillStyle='#5b5b59';ctx.fillRect(W/2-22,iy-172,44,62); // top cylinder housing
+  ctx.fillStyle='rgba(255,255,255,.2)';ctx.fillRect(px-7,iy-186,3,186);
+  // left side: cylinder bolted to the outside of the left wall
+  ctx.fillStyle='#2a2a28';ctx.fillRect(l-BT,mid-9,BT,18);   // opening for the rod
+  ctx.fillStyle='#7b7b79';ctx.fillRect(l-BT-6,mid-34,6,68); // mounting plate
+  ctx.fillStyle='#5b5b59';ctx.fillRect(l-BT-80,mid-22,74,44);
+  ctx.fillStyle='#7b7b79';ctx.fillRect(l-BT-8,mid-7,10,14); // rod stub
+  ctx.fillStyle='#6d6d6b';
+  for(const dy of[-26,26]){ctx.beginPath();ctx.arc(l-BT-3,mid+dy,2.5,0,6.2832);ctx.fill()}
+}
+function drawPress(l,iy,ih,bottom){
+  const w=BW-4,x=l+2,y=bottom-PT;
+  ctx.fillStyle='#8f8f8d';ctx.fillRect(W/2-6,iy-110,12,y-(iy-110)+4);     // top rod
+  metal(x,y,w,PT,false);
+  const ext=ease(platen.q)*SIDE_MAX,yT=iy+ih*TOP_DEPTH+6,hS=iy+ih-yT,fx=l+ext-26,mid=yT+hS/2;
+  if(platen.q>0){
+    if(fx>l-BT){ctx.fillStyle='#8f8f8d';ctx.fillRect(l-BT,mid-7,fx-(l-BT)+2,14)}  // side rod
+    ctx.save();ctx.beginPath();ctx.rect(l,iy,BW,ih);ctx.clip();
+    metal(fx,yT,26,hS,true);ctx.restore();
+  }
+}
+function drawBall(b,kt,ks){
   ctx.save();ctx.translate(b.x,b.y);
-  if(k>0&&inBin(b))ctx.scale(1+.25*k,1-.5*k);
+  if((kt>0||ks>0)&&inBin(b))ctx.scale(1+.25*kt-.5*ks,1-.5*kt+.3*ks);
   ctx.rotate(b.a);
   ctx.save();ctx.shadowColor='rgba(0,0,0,.28)';ctx.shadowBlur=8;ctx.shadowOffsetY=3;
   ctx.beginPath();ctx.arc(0,0,R,0,6.2832);ctx.fillStyle=b.c;ctx.fill();ctx.restore();
@@ -281,31 +304,32 @@ function draw(){
     // rivets
     ctx.fillStyle='#6d6d6b';
     for(let y=iy+16;y<top-14;y+=36){ctx.beginPath();ctx.arc(l-BT/2,y,2.5,0,6.2832);ctx.fill();ctx.beginPath();ctx.arc(l+BW+BT/2,y,2.5,0,6.2832);ctx.fill()}
+    drawFrame(l,iy);
     // chute slot on the right wall
     ctx.fillStyle='#2a2a28';ctx.fillRect(l+BW+1,top-12-46,BT-2,42);
     // status light
-    const busy=platen.p>0;
+    const busy=platen.s!==0;
     ctx.save();ctx.shadowColor=busy?'#ff453a':'#34c759';ctx.shadowBlur=12;
-    ctx.fillStyle=busy?'#ff453a':'#34c759';ctx.beginPath();ctx.arc(l+BW+BT/2,iy-10,7,0,6.2832);ctx.fill();ctx.restore();
+    ctx.fillStyle=busy?'#ff453a':'#34c759';ctx.beginPath();ctx.arc(l+BW+BT/2,iy-196,7,0,6.2832);ctx.fill();ctx.restore();
     // fill meter
     let cnt=0;for(const b of bodies)if(!b.sq&&inBin(b))cnt++;
-    const f=Math.min(cnt/16,1),mx=l-BT-22;
+    const f=Math.min(cnt/16,1),mx=l-BT-110;
     ctx.fillStyle='#e0e0de';rr(mx,iy,10,BH,4);ctx.fill();
     ctx.fillStyle=f>.8?'#ff453a':f>.5?'#f2b441':'#34c759';
     const fh=BH*f;rr(mx,iy+BH-fh,10,fh,4);ctx.fill();
   }
 
-  const bottom=MODE?platenBottom():0;
-  if(MODE&&platen.p<.02)drawPlaten(l,bottom);      // resting lid sits behind falling balls
-  const kq=MODE?clamp((bottom-(iy+ih*.3))/(ih*.55),0,1):0;
+  const bottom=MODE?platenBottom():0,idle=platen.s===0;
+  if(MODE&&idle)drawPress(l,iy,ih,bottom);         // resting press sits behind falling balls
+  const kq=MODE?clamp((bottom-(iy+4))/(ih*TOP_DEPTH-4),0,1)*.6:0,ks=MODE?ease(platen.q):0;
   for(const b of bodies){
     if(b.sq){
       ctx.save();ctx.shadowColor='rgba(0,0,0,.3)';ctx.shadowBlur=8;ctx.shadowOffsetY=3;
       ctx.fillStyle=b.c;rr(b.x-b.hs,b.y-b.hs,2*b.hs,2*b.hs,7);ctx.fill();ctx.restore();
       ctx.lineWidth=b===held?3:1.5;ctx.strokeStyle=b===held?'#8a8a88':'rgba(255,255,255,.18)';rr(b.x-b.hs+.75,b.y-b.hs+.75,2*b.hs-1.5,2*b.hs-1.5,7);ctx.stroke();
-    }else drawBall(b,kq);
+    }else drawBall(b,kq,ks);
   }
-  if(MODE&&platen.p>=.02)drawPlaten(l,bottom);
+  if(MODE&&!idle)drawPress(l,iy,ih,bottom);
   for(const p of parts){ctx.fillStyle='rgba(150,150,148,'+(Math.max(p.l,0)*.45)+')';ctx.beginPath();ctx.arc(p.x,p.y,p.r,0,6.2832);ctx.fill()}
 }
 
